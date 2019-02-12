@@ -10,15 +10,11 @@ void (* M0TimerClass::_TC5Callback)(uint8_t t) = 0;
 
 // Start with fired values as false. The user can choose to use these
 // rather than assign a callback
-volatile boolean M0TimerClass::_TC3Fired = false;
-volatile boolean M0TimerClass::_TC4Fired = false;
-volatile boolean M0TimerClass::_TC5Fired = false;
+volatile boolean M0TimerClass::_fired[] = {0,0,0};
 
 // Whether or not these timers are single use (automatically
 // stopped and reset when they trigger for the first time)
-boolean M0TimerClass::_TC3SingleUse = false;
-boolean M0TimerClass::_TC4SingleUse = false;
-boolean M0TimerClass::_TC5SingleUse = false;
+boolean M0TimerClass::_singleUse[] = {0,0,0};
 
 // Goal reps is the number of times the actual timer needs to fire before the
 // library version of the timer fires. This is to support timers times greater
@@ -28,28 +24,55 @@ uint16_t M0TimerClass::_goalReps[] = {1,1,1};
 // Cur reps is the number of times the actual timer has fired so far.
 uint16_t M0TimerClass::_curReps[] = {0,0,0};
 
+// Record of exactly when an interrupt was fired
+volatile uint32_t M0TimerClass::_intTime[] = {0,0,0};
+
+// Counter for setting offsets
+uint32_t _internalCounter = 0;
+
+// Constant for making frequency calculations easier
+const double timerCoeff = (double) CPU_HZ / (double) TIMER_PRESCALER_DIV / 1000000.0;
+
+
+// If val is true, set the given timer to true. If val is false, set the given
+// timer to muili-use
+void M0TimerClass::setSingleUse(uint8_t t, boolean val) {
+  _singleUse[t] = val;
+}
+
 // 1- 1 / 10001
 
 // n / (n + 1-n%1)
 
 // 0.9461538462
 
+boolean M0TimerClass::start(int period, uint8_t t, boolean calcOffset) {
+  return start(period, t, (calcOffset ? micros() : 0));
+}
+
 // Start a timer with the given period. Values for t can be 3, 4, or 5
-boolean M0TimerClass::start(double period, uint8_t t){
+boolean M0TimerClass::start(int period, uint8_t t, uint32_t offset){
+
+  boolean calcOffset = offset > 0;
+
+  // Serial.println(calcOffset ? "Calculating Offset" : "No Offset");
+
+  _internalCounter = offset;
+
   TcCount16* TC = getTimer(t);
-  period = period / 1000;
+  // period = period / 1000;
   if (TC != 0) {
 
     // Do some calculations to account for the fact that the period can be
     // greater than 1
-    double p = period;
+    int p = period + TIMER_CALAB;
 
     // If the period is greater than 1...
-    if (period > 1) {
+    if (period > 1000000) {
 
         // If the user specified a time that will overflow the counter and
         // goal vars, then return now.
-        if (period > 65000) {
+        if (period > 65000000000) {
           return false;
         }
 
@@ -57,13 +80,22 @@ boolean M0TimerClass::start(double period, uint8_t t){
         // n / (n + 1-n%1)
         // This ensures that the period is always below 1 (but as close to it
         // as possible)
-        p = period / (period + 1.0 - fmod(period,1.0));
+        p = (int) ((double) period / ((double) period + 1000000.0 - fmod((double) period,1000000.0)) * 1000000.0);
+
+        // S    mS       uS
+        // 1 -> 1,000 -> 1,000,000
+        //
 
         // Set the integer number of times we need to count to our newly
         // calculated period to reach the actual user's goal. For example,
         // if period = 1.5, p = 0.75 and _goalReps = 2 (IE we need to count
         // up to 0.75s twice to reach the goal of 1.5s)
-        _goalReps[t] = (int) (period + 1.0 - fmod(period,1.0));
+        _goalReps[t] = (int) (((double) period + 1000000.0 - fmod((double) period,1000000.0)) / 1000000.0);
+
+        if (calcOffset) {
+          calcOffset = false;
+          Serial.println("Calculate Offset not supported for periods of more than one second");
+        }
     } else {
 
       // If the user's period was not greater than 1, then we "disable" the
@@ -71,15 +103,23 @@ boolean M0TimerClass::start(double period, uint8_t t){
       _goalReps[t] = 1;
     }
 
+    // Automatically set offset adjusted timers to single use
+    if (calcOffset) {
+      _singleUse[t] = true;
+    }
+
     // Note that since we are starting this timer now, it is currently at rep
     // number 0
     _curReps[t] = 0;
 
     // ===== Formally start the timer ===== //
-    _configureTimer(p, TC);
+    _configureTimer(p, TC, calcOffset);
 
     // Enable the timer
     _tcEnable(TC);
+
+    // uint32_t now = micros();
+    // Serial.print("Time to set: "); Serial.println(now - _internalCounter);
 
     return true;
   }
@@ -134,10 +174,24 @@ TcCount16* M0TimerClass::getTimer(uint8_t t) {
 // 48000000 / (1024 * 1/0.01)
 
 // Internal helper function for setting the timer's frequency
-void M0TimerClass::_setTimerPeriod(double period, TcCount16 * TC) {
+void M0TimerClass::_setTimerPeriod(int period, TcCount16 * TC, boolean calcOffset) {
   // Calculate the frequency to use based on the period given
-  double frequencyHz = (int) 1 / period;
-  int compareValue = (int) (CPU_HZ / (TIMER_PRESCALER_DIV * frequencyHz));
+  if (calcOffset) {
+    // Calibrate the selected period based on how long it has been since the
+    // user defined offset. This will ensure that the timer fires exactly
+    // `period` microseconds after the given offset time (in micros).
+    uint32_t since = micros() - _internalCounter;
+    period -= (since + OFFSET_PERIOD_ENABLE_MICROS);
+  }
+
+  // If period ends up being less than TIMER_THRESH, then we are late!
+  // Set period to TIMER_THRESH anyway and let the timer execute.
+  if (period < TIMER_THRESH) {
+    period = TIMER_THRESH;
+  }
+
+  int compareValue = (int) (timerCoeff * period);
+
   // Make sure the count is in a proportional position to where it was
   // to prevent any jitter or disconnect when changing the compare value.
   TC->COUNT.reg = map(TC->COUNT.reg, 0, TC->CC[0].reg, 0, compareValue);
@@ -176,7 +230,7 @@ void M0TimerClass::_configureIRQ(TcCount16 * TC) {
 }
 
 // Internal helper function for starting a timer with a given period
-void M0TimerClass::_configureTimer(double period, TcCount16 * TC) {
+void M0TimerClass::_configureTimer(int period, TcCount16 * TC, boolean calcOffset) {
   // Disable the timer
   _tcDisable(TC);
 
@@ -194,7 +248,7 @@ void M0TimerClass::_configureTimer(double period, TcCount16 * TC) {
   TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV1024;
   while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
 
-  _setTimerPeriod(period, TC);
+  _setTimerPeriod(period, TC, calcOffset);
 
   // Enable the compare interrupt
   TC->INTENSET.reg = 0;
@@ -223,38 +277,16 @@ void M0TimerClass::_tcEnable(TcCount16* TC)
   while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
 }
 
-// Return whether or not TC3 has fired. If it has, then reset the
+// Return whether or not given timer has fired. If it has, then reset the
 // flag
-boolean M0TimerClass::getTC3Fired() {
-  if (_TC3Fired) {
-    _TC3Fired = false;
+boolean M0TimerClass::getFired(uint8_t t) {
+  if (_fired[t]) {
+    _fired[t] = false;
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
-// Return whether or not TC4 has fired. If it has, then reset the
-// flag
-boolean M0TimerClass::getTC4Fired() {
-  if (_TC4Fired) {
-    _TC4Fired = false;
-    return true;
-  } else {
-    return false;
-  }
-}
-
-// Return whether or not TC5 has fired. If it has, then reset the
-// flag
-boolean M0TimerClass::getTC5Fired() {
-  if (_TC5Fired) {
-    _TC5Fired = false;
-    return true;
-  } else {
-    return false;
-  }
-}
 
 // Timer handlers
 // Also could use INTFLAG.bit.MC1 (if we set "TC->CC[1].reg" in _setTimerFrequency)
@@ -272,20 +304,23 @@ void TC3_Handler() {
 
     // If we have reached our rep goal, then proceeed
     if (M0Timer._curReps[0] >= M0Timer._goalReps[0]) {
+      // First set the time at which this one fired;
+      M0Timer._intTime[M0Timer.T3] = micros() - OFFSET_INT_TIME;
+
       // reset the counter for this timer
       M0Timer._curReps[0] = 0;
 
       // Note that this timer has been fired
-      M0Timer._TC3Fired = true;
+      M0Timer._fired[M0Timer.T3] = true;
+
+      // If this timer was a single use timer, then stop it
+      if (M0Timer._singleUse[M0Timer.T3]) {
+        M0Timer.stop(M0Timer.T3);
+      }
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC3Callback != 0) {
         (*M0Timer._TC3Callback)(M0Timer.T3);
-      }
-
-      // If this timer was a single use timer, then stop it
-      if (M0Timer._TC3SingleUse) {
-        M0Timer.stop(M0Timer.T3);
       }
     }
   }
@@ -301,20 +336,23 @@ void TC4_Handler() {
 
     // If we have reached our rep goal, then proceeed
     if (M0Timer._curReps[1] >= M0Timer._goalReps[1]) {
+      // First set the time at which this one fired;
+      M0Timer._intTime[M0Timer.T4] = micros() - OFFSET_INT_TIME;
+
       // reset the counter for this timer
       M0Timer._curReps[1] = 0;
 
       // Note that this timer has been fired
-      M0Timer._TC4Fired = true;
+      M0Timer._fired[M0Timer.T4] = true;
+
+      // If this timer was a single use timer, then stop it
+      if (M0Timer._singleUse[M0Timer.T4]) {
+        M0Timer.stop(M0Timer.T4);
+      }
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC4Callback != 0) {
         (*M0Timer._TC4Callback)(M0Timer.T4);
-      }
-
-      // If this timer was a single use timer, then stop it
-      if (M0Timer._TC4SingleUse) {
-        M0Timer.stop(M0Timer.T4);
       }
     }
   }
@@ -332,20 +370,23 @@ void TC5_Handler() {
 
     // If we have reached our rep goal, then proceeed
     if (M0Timer._curReps[2] >= M0Timer._goalReps[2]) {
+      // First set the time at which this one fired;
+      M0Timer._intTime[M0Timer.T5] = micros() - OFFSET_INT_TIME;
+
       // reset the counter for this timer
       M0Timer._curReps[2] = 0;
 
       // Note that this timer has been fired
-      M0Timer._TC5Fired = true;
+      M0Timer._fired[M0Timer.T5] = true;
+
+      // If this timer was a single use timer, then stop it
+      if (M0Timer._singleUse[M0Timer.T5]) {
+        M0Timer.stop(M0Timer.T5);
+      }
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC5Callback != 0) {
         (*M0Timer._TC5Callback)(M0Timer.T5);
-      }
-
-      // If this timer was a single use timer, then stop it
-      if (M0Timer._TC5SingleUse) {
-        M0Timer.stop(M0Timer.T5);
       }
     }
   }
