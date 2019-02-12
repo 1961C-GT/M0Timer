@@ -35,11 +35,10 @@ uint16_t M0TimerClass::_curReps[] = {0,0,0};
 // 0.9461538462
 
 // Start a timer with the given period. Values for t can be 3, 4, or 5
-void M0TimerClass::startTimer(double period, uint8_t t){
-  TcCount16* tc = getTimer(t);
-
+boolean M0TimerClass::start(double period, uint8_t t){
+  TcCount16* TC = getTimer(t);
   period = period / 1000;
-  if (tc != 0) {
+  if (TC != 0) {
 
     // Do some calculations to account for the fact that the period can be
     // greater than 1
@@ -51,7 +50,7 @@ void M0TimerClass::startTimer(double period, uint8_t t){
         // If the user specified a time that will overflow the counter and
         // goal vars, then return now.
         if (period > 65000) {
-          return;
+          return false;
         }
 
         // Set the period based on the following formula:
@@ -64,40 +63,68 @@ void M0TimerClass::startTimer(double period, uint8_t t){
         // calculated period to reach the actual user's goal. For example,
         // if period = 1.5, p = 0.75 and _goalReps = 2 (IE we need to count
         // up to 0.75s twice to reach the goal of 1.5s)
-        _goalReps[t - 3] = (int) (period + 1.0 - fmod(period,1.0));
+        _goalReps[t] = (int) (period + 1.0 - fmod(period,1.0));
     } else {
 
       // If the user's period was not greater than 1, then we "disable" the
       // goal counting system by setting the counting goal to 1
-      _goalReps[t - 3] = 1;
+      _goalReps[t] = 1;
     }
 
     // Note that since we are starting this timer now, it is currently at rep
     // number 0
-    _curReps[t - 3] = 0;
+    _curReps[t] = 0;
 
-    // Formally start the timer
-    _startTimer(p, tc);
+    // ===== Formally start the timer ===== //
+    _configureTimer(p, TC);
+
+    // Enable the timer
+    _tcEnable(TC);
+
+    return true;
   }
+
+  return false;
 }
 
+// Start the timer using the previously configured period settings. This does
+// not reset the timer. To do so, use stop first
+// boolean M0TimerClass::start(uint8_t t){
+//   TcCount16* tc = getTimer(t);
+//   if (tc != 0) {
+//     _tcEnable(tc);
+//     return true;
+//   }
+// }
+
 // Stop the given timer number. Values can be 3, 4, or 5
-void M0TimerClass::stopTimer(uint8_t t) {
+boolean M0TimerClass::stop(uint8_t t) {
   TcCount16* tc = getTimer(t);
   if (tc != 0) {
-    _tcReset(tc);
     _tcDisable(tc);
+    _tcReset(tc);
+    return true;
   }
+  return false;
+}
+
+boolean M0TimerClass::setup(uint8_t t) {
+  TcCount16* TC = getTimer(t);
+  if (TC != 0) {
+    _configureIRQ(TC);
+    return true;
+  }
+  return false;
 }
 
 // Get the TcCount16* value for the given timer number. Can be 3, 4, or 5
 TcCount16* M0TimerClass::getTimer(uint8_t t) {
   switch (t) {
-    case 3:
+    case 0:
       return (TcCount16*) TC3;
-    case 4:
+    case 1:
       return (TcCount16*) TC4;
-    case 5:
+    case 2:
       return (TcCount16*) TC5;
     default:
       return 0;
@@ -107,7 +134,7 @@ TcCount16* M0TimerClass::getTimer(uint8_t t) {
 // 48000000 / (1024 * 1/0.01)
 
 // Internal helper function for setting the timer's frequency
-void M0TimerClass::_setTimerFrequency(double period, TcCount16 * TC) {
+void M0TimerClass::_setTimerPeriod(double period, TcCount16 * TC) {
   // Calculate the frequency to use based on the period given
   double frequencyHz = (int) 1 / period;
   int compareValue = (int) (CPU_HZ / (TIMER_PRESCALER_DIV * frequencyHz));
@@ -118,9 +145,7 @@ void M0TimerClass::_setTimerFrequency(double period, TcCount16 * TC) {
   while (TC->STATUS.bit.SYNCBUSY == 1);
 }
 
-// Internal helper function for starting a timer with a given period
-void M0TimerClass::_startTimer(double period, TcCount16 * TC) {
-
+void M0TimerClass::_configureIRQ(TcCount16 * TC) {
   if (TC == (TcCount16*) TC3) {
     REG_GCLK_CLKCTRL = (uint16_t) (GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TCC2_TC3) ;
   } else if (TC == (TcCount16*) TC4 || TC == (TcCount16*) TC5) {
@@ -129,53 +154,7 @@ void M0TimerClass::_startTimer(double period, TcCount16 * TC) {
     Serial.println("ERR");
     return;
   }
-
-  //const uint8_t GCLK_SRC = 4;
-  // // Set GCLK 4 to 1 times divider
-  // GCLK->GENDIV.reg = GCLK_GENDIV_ID(GCLK_SRC) | GCLK_GENDIV_DIV(4);
-  // while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
-  //
-  // // Set GCLK 4 To use the 32KHz low power internal clock and to run in stdby
-  // GCLK->GENCTRL.reg = GCLK_GENCTRL_GENEN |
-  //         GCLK_GENCTRL_SRC_OSC8M | // OXCULP32K
-  //         GCLK_GENCTRL_ID(GCLK_SRC) //|
-  //         //GCLK_GENCTRL_RUNSTDBY;
-  // while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
-  //
-  // // Enable TC3 (via the Power Manager) [TODO Not needed?]
-  // PM->APBCMASK.reg |= PM_APBCMASK_TC3;
-  //
-  // // Set to use GCLK 4 for TCC2 and TC3
-  // GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |
-  //         GCLK_CLKCTRL_GEN(GCLK_SRC) |
-  //         GCLK_CLKCTRL_ID(GCM_TCC2_TC3);
-  // while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY);
-
   while (GCLK->STATUS.bit.SYNCBUSY == 1 ); // wait for sync
-
-  // Disable the timer
-  TC->CTRLA.reg &= ~TC_CTRLA_ENABLE;
-  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-
-  // Use the 16-bit timer
-  TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16;
-  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-
-  // Use match mode so that the timer counter resets when the count matches the compare register
-  // IMPORTANT - this automatically resets the timer when we reach the compare
-  // register (and prevents an overrun)
-  TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ;
-  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-
-  // Set prescaler to 1024 (32)
-  TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV1024;
-  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-
-  _setTimerFrequency(period, TC);
-
-  // Enable the compare interrupt
-  TC->INTENSET.reg = 0;
-  TC->INTENSET.bit.MC0 = 1;
 
   IRQn_Type irq;
 
@@ -194,9 +173,33 @@ void M0TimerClass::_startTimer(double period, TcCount16 * TC) {
   NVIC_SetPriority(irq, 0);
   NVIC_EnableIRQ(irq);
 
-  // Enable the timer
-  TC->CTRLA.reg |= TC_CTRLA_ENABLE;
+}
+
+// Internal helper function for starting a timer with a given period
+void M0TimerClass::_configureTimer(double period, TcCount16 * TC) {
+  // Disable the timer
+  _tcDisable(TC);
+
+  // Use the 16-bit timer
+  TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16;
   while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  // Use match mode so that the timer counter resets when the count matches the compare register
+  // IMPORTANT - this automatically resets the timer when we reach the compare
+  // register (and prevents an overrun)
+  TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  // Set prescaler to 1024 (32)
+  TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV1024;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+
+  _setTimerPeriod(period, TC);
+
+  // Enable the compare interrupt
+  TC->INTENSET.reg = 0;
+  TC->INTENSET.bit.MC0 = 1;
+
 }
 
 // Reset a timer
@@ -212,6 +215,12 @@ void M0TimerClass::_tcDisable(TcCount16* tc)
 {
   tc->CTRLA.reg &= ~TC_CTRLA_ENABLE;
   while (tc->STATUS.reg & TC_STATUS_SYNCBUSY);
+}
+
+void M0TimerClass::_tcEnable(TcCount16* TC)
+{
+  TC->CTRLA.reg |= TC_CTRLA_ENABLE;
+  while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
 }
 
 // Return whether or not TC3 has fired. If it has, then reset the
@@ -271,12 +280,12 @@ void TC3_Handler() {
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC3Callback != 0) {
-        (*M0Timer._TC3Callback)(3);
+        (*M0Timer._TC3Callback)(M0Timer.T3);
       }
 
       // If this timer was a single use timer, then stop it
       if (M0Timer._TC3SingleUse) {
-        M0Timer.stopTimer(3);
+        M0Timer.stop(M0Timer.T3);
       }
     }
   }
@@ -300,12 +309,12 @@ void TC4_Handler() {
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC4Callback != 0) {
-        (*M0Timer._TC4Callback)(4);
+        (*M0Timer._TC4Callback)(M0Timer.T4);
       }
 
       // If this timer was a single use timer, then stop it
       if (M0Timer._TC4SingleUse) {
-        M0Timer.stopTimer(4);
+        M0Timer.stop(M0Timer.T4);
       }
     }
   }
@@ -331,12 +340,12 @@ void TC5_Handler() {
 
       // Execute the user's callback if they defined one
       if(M0Timer._TC5Callback != 0) {
-        (*M0Timer._TC5Callback)(5);
+        (*M0Timer._TC5Callback)(M0Timer.T5);
       }
 
       // If this timer was a single use timer, then stop it
       if (M0Timer._TC5SingleUse) {
-        M0Timer.stopTimer(5);
+        M0Timer.stop(M0Timer.T5);
       }
     }
   }

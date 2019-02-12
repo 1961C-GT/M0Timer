@@ -14,10 +14,16 @@
 
 class M0TimerClass {
 public:
-  // static TcCount16* getTimer(int t);
 
-  static void startTimer(double period, uint8_t t);
-  static void stopTimer(uint8_t t);
+  static const uint8_t T3 = 0;
+  static const uint8_t T4 = 1;
+  static const uint8_t T5 = 2;
+
+  static boolean setup(uint8_t);
+
+  static boolean start(double period, uint8_t t);
+  static boolean stop(uint8_t t);
+
   static TcCount16* getTimer(uint8_t t);
 
   static void attachTC3Handler(void (* handleNewCallback)(uint8_t t)) { _TC3Callback = handleNewCallback; };
@@ -50,14 +56,14 @@ public:
 
 
 private:
-  static void _setTimerFrequency(double period, TcCount16 * TC);
-  static void _startTimer(double period, TcCount16 * TC);
+
+  static void _setTimerPeriod(double period, TcCount16 * TC);
+  static void _configureTimer(double period, TcCount16 * TC);
+  static void _configureIRQ(TcCount16 * TC);
   static void _tcReset(TcCount16 * TC);
   static void _tcDisable(TcCount16 * TC);
+  static void _tcEnable(TcCount16* TC);
 
 };
-
-
 extern M0TimerClass M0Timer;
-
 #endif
