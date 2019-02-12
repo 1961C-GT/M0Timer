@@ -37,6 +37,9 @@ public:
 
   static boolean start(int period, uint8_t t, boolean calcOffset = false);
   static boolean start(int period, uint8_t t, uint32_t offset);
+
+  static boolean startms(int period, uint8_t t, boolean calcOffset = false);
+  static boolean startms(int period, uint8_t t, uint32_t offset);
   static boolean stop(uint8_t t);
 
   static TcCount16* getTimer(uint8_t t);
