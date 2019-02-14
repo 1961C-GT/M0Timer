@@ -46,18 +46,22 @@ void M0TimerClass::setSingleUse(uint8_t t, boolean val) {
 
 // 0.9461538462
 
+// Period is milli seconds
 boolean M0TimerClass::startms(int period, uint8_t t, boolean calcOffset) {
   return start(period * 1000, t, calcOffset);
 }
+// Period is milli seconds
 boolean M0TimerClass::startms(int period, uint8_t t, uint32_t offset) {
   return start(period * 1000, t, offset);
 }
 
+// Period is micro seconds
 boolean M0TimerClass::start(int period, uint8_t t, boolean calcOffset) {
   return start(period, t, (calcOffset ? micros() : 0));
 }
 
 // Start a timer with the given period. Values for t can be 3, 4, or 5
+// Period is micro seconds
 boolean M0TimerClass::start(int period, uint8_t t, uint32_t offset){
 
   boolean calcOffset = offset > 0;
