@@ -182,6 +182,20 @@ TcCount16* M0TimerClass::getTimer(uint8_t t) {
   }
 }
 
+static void attachHandler(uint8_t t, void (* handleNewCallback)(uint8_t t)) {
+  switch (t) {
+    case 0:
+      M0Timer._TC3Callback = handleNewCallback;
+      break;
+    case 1:
+      M0Timer._TC4Callback = handleNewCallback;
+      break;
+    case 2:
+      M0Timer._TC5Callback = handleNewCallback;
+      break;
+  }
+}
+
 // 48000000 / (1024 * 1/0.01)
 
 // Internal helper function for setting the timer's frequency

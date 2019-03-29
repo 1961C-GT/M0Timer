@@ -44,9 +44,7 @@ public:
 
   static TcCount16* getTimer(uint8_t t);
 
-  static void attachTC3Handler(void (* handleNewCallback)(uint8_t t)) { _TC3Callback = handleNewCallback; };
-  static void attachTC4Handler(void (* handleNewCallback)(uint8_t t)) { _TC4Callback = handleNewCallback; };
-  static void attachTC5Handler(void (* handleNewCallback)(uint8_t t)) { _TC5Callback = handleNewCallback; };
+  static void attachHandler(uint8_t, void (* handleNewCallback)(uint8_t t));
 
   static void setSingleUse(uint8_t t, boolean val = true);
   static boolean getFired(uint8_t t);
